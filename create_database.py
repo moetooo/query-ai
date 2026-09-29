@@ -1,9 +1,11 @@
+import os
 import sqlite3
 
 
 # Step1: Create Dummy database 
 
-conn = sqlite3.connect('amazon.db')
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'amazon.db')
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
 # Step2: Create Tables
@@ -99,4 +101,4 @@ cursor.executemany("INSERT INTO order_items (order_id, product_id, quantity, sub
 conn.commit()
 conn.close()
 
-print("✅ Database 'amazon.db' created with dummy data!")
+print("[SUCCESS] Database 'amazon.db' created with dummy data!")
