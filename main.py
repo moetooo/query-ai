@@ -52,63 +52,131 @@ def clean_sql(raw_sql: str) -> str:
     return sql.rstrip(";").strip()
 
 
-def make_sql(schema: str, question: str) -> str:
-    """Turn a question into SQL using Groq."""
+MODEL_RANKING = [
+    "llama-3.1-8b-instant",     # Rank 1: Highest quota (14,400 RPD), fastest, lowest failure rate
+    "llama-3.3-70b-versatile",  # Rank 2: Deep reasoning accuracy
+    "gemma2-9b-it",             # Rank 3: High quota backup (14,400 RPD)
+    "llama-3.2-3b-preview",     # Rank 4: Lightweight fallback
+    "llama-3.2-1b-preview",     # Rank 5: Ultra-lightweight fallback
+]
+
+
+def get_available_models(api_key: Optional[str] = None) -> List[str]:
+    """Fetch active chat models available for the Groq API key."""
+    if not api_key:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            try:
+                import streamlit as st
+                api_key = st.secrets.get("GROQ_API_KEY")
+            except Exception:
+                pass
+    if not api_key:
+        return []
+    try:
+        client = Groq(api_key=api_key)
+        res = client.models.list()
+        chat_models = [
+            m.id for m in res.data
+            if not any(k in m.id.lower() for k in ["whisper", "guard", "embed", "tts", "transcription"])
+        ]
+        return chat_models
+    except Exception:
+        return []
+
+
+def make_sql(schema: str, question: str) -> Tuple[str, str]:
+    """Turn a question into SQL using Groq with automatic top-to-bottom model failover.
+    
+    Returns:
+        Tuple[str, str]: (sql_query, model_name_used)
+    """
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        # Try streamlit secrets
         try:
             import streamlit as st
             api_key = st.secrets.get("GROQ_API_KEY")
         except Exception:
             pass
-    
+
     if not api_key:
-        return "Error: GROQ_API_KEY not set. Please set it in your .env file, Streamlit secrets, or sidebar."
-    
+        return "Error: GROQ_API_KEY not set. Please set it in your .env file, Streamlit secrets, or sidebar.", ""
+
     try:
         client = Groq(api_key=api_key)
-        
-        system = """You are a SQL generator. Given the schema and question, write a SQL query.
+    except Exception as init_err:
+        return f"Error: Failed to initialize Groq client: {init_err}", ""
+
+    # Fetch live available models for this key
+    live_models = get_available_models(api_key=api_key)
+
+    # Build candidate model list ordered by our defined ranking
+    candidate_models: List[str] = []
+    custom_model = os.getenv("GROQ_MODEL")
+    if custom_model:
+        candidate_models.append(custom_model)
+
+    for m in MODEL_RANKING:
+        if m not in candidate_models:
+            if not live_models or m in live_models:
+                candidate_models.append(m)
+
+    for m in live_models:
+        if m not in candidate_models:
+            candidate_models.append(m)
+
+    if not candidate_models:
+        candidate_models = list(MODEL_RANKING)
+
+    system = """You are a SQL generator. Given the schema and question, write a SQL query.
 Use only the tables and columns from the schema. Return ONLY the SQL, nothing else."""
 
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"Schema:\n{schema}\n\nQuestion: {question}\n\nSQL:"}
-            ],
-            temperature=0
-        )
-        
-        raw_sql = resp.choices[0].message.content or ""
-        sql = clean_sql(raw_sql)
+    attempt_errors = []
+    for model_name in candidate_models:
+        try:
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"Schema:\n{schema}\n\nQuestion: {question}\n\nSQL:"}
+                ],
+                temperature=0
+            )
 
-        # Validate that the query is read-only
-        upper_sql = sql.upper().strip()
-        if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH") or upper_sql.startswith("EXPLAIN")):
-            return f"Error: Only read-only SELECT queries are allowed. Attempted:\n{sql}"
+            raw_sql = resp.choices[0].message.content or ""
+            sql = clean_sql(raw_sql)
 
-        for keyword in FORBIDDEN_KEYWORDS:
-            if keyword in upper_sql:
-                return f"Error: Forbidden keyword '{keyword.strip()}' found. Only read-only SELECT queries are allowed."
+            # Validate that the query is read-only
+            upper_sql = sql.upper().strip()
+            if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH") or upper_sql.startswith("EXPLAIN")):
+                return f"Error: Only read-only SELECT queries are allowed. Attempted:\n{sql}", model_name
 
-        return sql
-    except Exception as err:
-        return f"Error communicating with Groq API: {err}"
+            for keyword in FORBIDDEN_KEYWORDS:
+                if keyword in upper_sql:
+                    return f"Error: Forbidden keyword '{keyword.strip()}' found. Only read-only SELECT queries are allowed.", model_name
+
+            return sql, model_name
+
+        except Exception as err:
+            attempt_errors.append(f"{model_name}: {err}")
+            # Automatic failover: continue to the next ranked model
+            continue
+
+    error_summary = " | ".join(attempt_errors)
+    return f"Error: All models in the auto-failover chain failed: {error_summary}", ""
 
 
-def query(question: str) -> Tuple[Optional[List[Tuple[Any, ...]]], List[str], str]:
-    """Run a natural language query and return (rows, columns, sql)."""
+def query(question: str) -> Tuple[Optional[List[Tuple[Any, ...]]], List[str], str, str]:
+    """Run a natural language query and return (rows, columns, sql, model_used)."""
     if not os.path.exists(DB_PATH):
-        return None, [], f"Error: Database file '{DB_PATH}' does not exist. Please run create_database.py first."
+        return None, [], f"Error: Database file '{DB_PATH}' does not exist. Please run create_database.py first.", ""
 
     schema = get_schema()
-    sql = make_sql(schema, question)
-    
-    if sql.startswith("Error:"):
-        return None, [], sql
-    
+    sql, model_used = make_sql(schema, question)
+
+    if sql.lower().startswith("error"):
+        return None, [], sql, model_used
+
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -120,7 +188,8 @@ def query(question: str) -> Tuple[Optional[List[Tuple[Any, ...]]], List[str], st
         rows = None
         cols = []
         sql = f"Error executing query: {err}\n\nSQL attempted:\n{sql}"
-    
-    return rows, cols, sql
+
+    return rows, cols, sql, model_used
+
 
 

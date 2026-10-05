@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 import pandas as pd
-from main import query
+from main import get_available_models, query
 
 st.set_page_config(page_title="QueryAI", layout="centered")
 
@@ -109,6 +109,17 @@ with st.sidebar:
         os.environ["GROQ_API_KEY"] = api_key_input
 
     st.markdown("---")
+    st.markdown("### 🔄 Auto Model Failover")
+    st.caption(
+        "Queries automatically attempt the highest-volume models first and cascade down on errors:\n\n"
+        "1. **`llama-3.1-8b-instant`** (14.4k queries/day)\n"
+        "2. **`llama-3.3-70b-versatile`**\n"
+        "3. **`gemma2-9b-it`**\n"
+        "4. **`llama-3.2-3b-preview`**\n"
+        "5. **`llama-3.2-1b-preview`**"
+    )
+
+    st.markdown("---")
     st.markdown("### Example Questions")
     st.markdown("- *Show all customers*")
     st.markdown("- *List all products in Electronics category*")
@@ -134,7 +145,7 @@ if submitted:
         st.warning("Please enter a question to query the database.")
     else:
         with st.spinner("Generating SQL and running query..."):
-            rows, cols_data, sql = query(question)
+            rows, cols_data, sql, model_used = query(question)
         
         if rows is None:
             st.error(sql)
@@ -164,7 +175,10 @@ if submitted:
                 mime="text/csv"
             )
         
-        if sql and not sql.startswith("Error: GROQ_API_KEY"):
+        if sql and not sql.startswith("Error:"):
             with st.expander("View SQL", expanded=False):
                 st.code(sql, language="sql")
+                if model_used:
+                    st.caption(f"⚡ Generated via `{model_used}` (Auto-switched)")
+
 
