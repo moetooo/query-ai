@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 import pandas as pd
-from main import get_available_models, query
+from main import query
 
 st.set_page_config(page_title="QueryAI", layout="centered")
 
@@ -10,7 +10,7 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
     
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    body, .stApp { font-family: 'Inter', sans-serif; }
     
     .stApp { 
         background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
@@ -63,7 +63,23 @@ st.markdown("""
     
     .stDataFrame { border-radius: 8px; overflow: hidden; }
     
-    code { color: #79c0ff !important; background: #161b22 !important; }
+    :not(pre) > code {
+        color: #79c0ff !important;
+        background: #161b22 !important;
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+    }
+
+    .stCodeBlock, [data-testid="stCodeBlock"] {
+        border-radius: 8px !important;
+        overflow: hidden !important;
+    }
+
+    .stCodeBlock pre {
+        padding: 16px 20px !important;
+        margin: 0 !important;
+        background: #161b22 !important;
+    }
     
     .stButton button {
         background: #238636 !important;
